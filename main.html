@@ -1,0 +1,373 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>땅따먹기형 런닝앱 (지도 연동 프로토타입)</title>
+  <!-- Leaflet (지도) -->
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin="" />
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
+  <style>
+    :root {
+      --bg: #0b0e13;
+      --panel: rgba(255,255,255,0.06);
+      --panel-strong: rgba(255,255,255,0.10);
+      --accent: #7dd3fc;
+      --text: #e5e7eb;
+      --muted: #9ca3af;
+      --good: #10b981;
+      --warn: #f59e0b;
+      --danger: #ef4444;
+    }
+    *{box-sizing:border-box}
+    html,body{height:100%;margin:0;background:var(--bg);color:var(--text);font:14px/1.45 system-ui,Segoe UI,Roboto,Apple Color Emoji,Noto Color Emoji}
+
+    /* Layout */
+    .app{display:grid;grid-template-rows:auto 1fr auto;min-height:100vh}
+    header{
+      position:sticky;top:0;z-index:1000;
+      padding:.75rem 1rem;background:linear-gradient(180deg,rgba(0,0,0,.55),rgba(0,0,0,0));
+      backdrop-filter: blur(8px);
+      display:grid;gap:.5rem;grid-template-columns:1fr auto;align-items:center
+    }
+    .left, .right{display:flex;gap:.5rem;align-items:center;flex-wrap:wrap}
+    .brand{font-weight:800;letter-spacing:.2px}
+    .chip{padding:.35rem .6rem;border-radius:999px;background:var(--panel);color:var(--muted);border:1px solid rgba(255,255,255,.12)}
+    .field{display:flex;gap:.5rem;align-items:center}
+    input[type="text"]{padding:.55rem .7rem;border-radius:12px;border:1px solid rgba(255,255,255,.15);background:var(--panel);color:var(--text);min-width:140px}
+    input[type="color"]{appearance:none;width:32px;height:32px;border:none;border-radius:8px;background:#0000;overflow:hidden;cursor:pointer}
+    .switch{display:inline-flex;gap:.45rem;align-items:center}
+
+    button{appearance:none;border:1px solid rgba(255,255,255,.15);color:var(--text);background:var(--panel);padding:.65rem .95rem;border-radius:14px;cursor:pointer;transition:.2s transform,.2s background,.2s border-color;font-weight:700}
+    button:hover{transform:translateY(-1px);border-color:rgba(255,255,255,.35)}
+    .primary{background:linear-gradient(90deg,#22d3ee22,#22c55e22);border-color:rgba(125,211,252,.45)}
+    .danger{background:linear-gradient(90deg,#f43f5e22,#fb923c22);border-color:rgba(248,113,113,.45)}
+    button:disabled{opacity:.6;cursor:not-allowed;filter:grayscale(.5)}
+
+    /* Map */
+    #mapWrap{position:relative}
+    #map{height:calc(100vh - 152px)}
+    #overlay{position:absolute;left:0;top:0;width:100%;height:100%;pointer-events:none}
+    .leaflet-container{background:#0a0d12}
+
+    /* Stats Card (floating) */
+    .card{
+      position:absolute;right:12px;bottom:12px;z-index:1200;min-width:260px;max-width:min(90vw,420px);
+      background:var(--panel);backdrop-filter:blur(10px);border:1px solid rgba(255,255,255,.12);border-radius:16px;padding:.9rem;box-shadow:0 10px 30px rgba(0,0,0,.4)
+    }
+    .stats{display:grid;grid-template-columns:repeat(3,1fr);gap:.35rem .75rem;align-items:center;font-variant-numeric:tabular-nums}
+    .stat-label{color:var(--muted);font-size:.9rem}
+    .stat-value{font-size:1.1rem;font-weight:800}
+    .hr{height:1px;background:rgba(255,255,255,.08);margin:.6rem -.9rem}
+    details{margin-top:.25rem}
+    summary{cursor:pointer;color:var(--muted)}
+    table{width:100%;border-collapse:collapse;font-variant-numeric:tabular-nums}
+    th,td{padding:.35rem .25rem;border-bottom:1px solid rgba(255,255,255,.08)}
+
+    footer{display:flex;justify-content:space-between;align-items:center;gap:.5rem;flex-wrap:wrap;padding:.6rem 1rem;color:var(--muted)}
+    .badge{display:inline-flex;gap:.35rem;align-items:center;padding:.25rem .6rem;border-radius:999px;background:var(--panel);border:1px solid rgba(255,255,255,.12)}
+  </style>
+</head>
+<body>
+  <div class="app">
+    <!-- Top Bar / Controls (inspired by running apps) -->
+    <header>
+      <div class="left">
+        <div class="brand">🏃‍♀️ Land‑Run</div>
+        <span class="chip">GPS: <span id="gpsStatus">대기</span></span>
+        <span class="chip">정확도: <span id="gpsAcc">-</span> m</span>
+        <span class="chip">위치: <span id="gpsLat">-</span>, <span id="gpsLon">-</span></span>
+      </div>
+      <div class="right">
+        <button id="btnStart" class="primary">▶️ 러닝 시작</button>
+        <button id="btnStop" class="danger" disabled>⏹️ 종료</button>
+        <button id="btnReset">🧹 세션 초기화</button>
+        <div class="field"><span class="chip">닉</span><input id="nickname" type="text" placeholder="Runner" /></div>
+        <div class="field"><span class="chip">색상</span><input id="color" type="color" value="#22c55e" /></div>
+        <label class="switch"><input id="debugMode" type="checkbox">디버그(←↑→↓)</label>
+      </div>
+    </header>
+
+    <!-- Map + Overlay -->
+    <div id="mapWrap">
+      <div id="map"></div>
+      <canvas id="overlay"></canvas>
+
+      <!-- Floating stats card -->
+      <div class="card">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:.25rem">
+          <strong>📊 세션 통계</strong>
+          <span class="badge">그리드: 1 m²</span>
+        </div>
+        <div class="stats">
+          <div class="stat-label">시간</div><div class="stat-value" id="statTime">00:00</div>
+          <div class="stat-label">블록</div><div class="stat-value" id="statCells">0</div>
+          <div class="stat-label">거리</div><div class="stat-value" id="statDist">0.00 km</div>
+        </div>
+        <div class="hr"></div>
+        <details>
+          <summary>📈 로컬 리더보드</summary>
+          <div id="leaderboard" style="margin-top:.4rem"></div>
+        </details>
+      </div>
+    </div>
+
+    <footer>
+      <div>※ OSM 타일이 로드되는 온라인 프로토타입입니다. 위치 권한을 허용하면 실제 지도 위에 1 m² 그리드를 칠합니다.</div>
+      <div class="right">
+        <a class="badge" id="btnExport" href="#" download="run.geojson">📥 경로(GEOJSON)</a>
+        <button id="btnClearAll" class="badge">🗑️ 기록 삭제</button>
+      </div>
+    </footer>
+  </div>
+
+  <script>
+    // ---------- Geo & Projection Helpers ----------
+    const R = 6378137; // meters (WGS84)
+    const toRad = d=>d*Math.PI/180;
+    const toDeg = r=>r*180/Math.PI;
+    // Spherical Mercator <-> lon/lat
+    const lonLatToMeters = (lon,lat)=>({
+      x: R*toRad(lon),
+      y: R*Math.log(Math.tan(Math.PI/4 + toRad(lat)/2))
+    });
+    const metersToLonLat = (x,y)=>({
+      lon: toDeg(x/R),
+      lat: toDeg(2*Math.atan(Math.exp(y/R))-Math.PI/2)
+    });
+    function haversine(lat1,lon1,lat2,lon2){
+      const dLat = toRad(lat2-lat1), dLon = toRad(lon2-lon1);
+      const a = Math.sin(dLat/2)**2 + Math.cos(toRad(lat1))*Math.cos(toRad(lat2))*Math.sin(dLon/2)**2;
+      return 2*R*Math.asin(Math.sqrt(a));
+    }
+
+    // ---------- Leaflet Map ----------
+    const map = L.map('map', {
+      zoomControl: false, // 커스텀 UI 느낌
+      minZoom: 10,
+      maxZoom: 20,
+      preferCanvas: true
+    }).setView([37.5665,126.9780], 18); // 서울시청 근처
+
+    L.control.zoom({ position: 'bottomleft' }).addTo(map);
+
+    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+      maxZoom: 20,
+      attribution: '&copy; OpenStreetMap'
+    }).addTo(map);
+
+    // Canvas overlay to paint visited 1m² cells
+    const overlay = document.getElementById('overlay');
+    const octx = overlay.getContext('2d');
+    function syncOverlaySize(){
+      const r = document.getElementById('map').getBoundingClientRect();
+      const dpr = Math.max(1, Math.min(2, window.devicePixelRatio||1));
+      overlay.width = Math.floor(r.width * dpr);
+      overlay.height = Math.floor(r.height * dpr);
+      overlay.style.width = r.width + 'px';
+      overlay.style.height = r.height + 'px';
+      octx.setTransform(dpr,0,0,dpr,0,0);
+      drawCells();
+    }
+    window.addEventListener('resize', syncOverlaySize);
+    map.on('zoomend moveend', drawCells);
+
+    // ---------- App State ----------
+    const gpsStatusEl = document.getElementById('gpsStatus');
+    const gpsAccEl = document.getElementById('gpsAcc');
+    const gpsLatEl = document.getElementById('gpsLat');
+    const gpsLonEl = document.getElementById('gpsLon');
+    const statTimeEl = document.getElementById('statTime');
+    const statCellsEl = document.getElementById('statCells');
+    const statDistEl = document.getElementById('statDist');
+    const btnStart = document.getElementById('btnStart');
+    const btnStop = document.getElementById('btnStop');
+    const btnReset = document.getElementById('btnReset');
+    const btnClearAll = document.getElementById('btnClearAll');
+    const btnExport = document.getElementById('btnExport');
+    const colorInput = document.getElementById('color');
+    const nicknameInput = document.getElementById('nickname');
+    const debugMode = document.getElementById('debugMode');
+    const leaderboardEl = document.getElementById('leaderboard');
+
+    let running=false, watchId=null, startTime=null, timerId=null;
+    let lastPos=null, totalDistance=0;
+    let path=[]; // [{lat,lon,t}]
+    let visited=new Set(); // keys: "ix,iy" (1m grid in Mercator meters)
+
+    function key(ix,iy){ return `${ix},${iy}` }
+
+    function addPosition(lat,lon,acc){
+      if(lastPos){ totalDistance += haversine(lastPos.lat,lastPos.lon,lat,lon); }
+      lastPos = {lat,lon};
+      path.push({lat,lon,t:Date.now()});
+      const m = lonLatToMeters(lon,lat);
+      const ix = Math.floor(m.x), iy = Math.floor(m.y);
+      visited.add(key(ix,iy));
+      gpsAccEl.textContent = acc? acc.toFixed(1) : '-';
+      gpsLatEl.textContent = lat.toFixed(6);
+      gpsLonEl.textContent = lon.toFixed(6);
+      statCellsEl.textContent = visited.size.toLocaleString();
+      statDistEl.textContent = (totalDistance/1000).toFixed(2) + ' km';
+      map.panTo([lat,lon], { animate: false });
+      drawCells();
+      prepareExport();
+    }
+
+    // Draw visited cells on overlay canvas aligned with Leaflet container pixels
+    function drawCells(){
+      const userColor = colorInput.value;
+      const mapDiv = document.getElementById('map');
+      const {width, height} = mapDiv.getBoundingClientRect();
+      octx.clearRect(0,0,width,height);
+      if(!lastPos) return;
+      // Calculate viewport bounds in meters to cull
+      const b = map.getBounds();
+      const nwM = lonLatToMeters(b.getWest(), b.getNorth());
+      const seM = lonLatToMeters(b.getEast(), b.getSouth());
+      const minX = Math.min(nwM.x, seM.x), maxX = Math.max(nwM.x, seM.x);
+      const minY = Math.min(seM.y, nwM.y), maxY = Math.max(seM.y, nwM.y);
+
+      octx.fillStyle = userColor + 'cc';
+      octx.strokeStyle = userColor;
+      // Iterate visited cells and draw rects that are within bounds
+      for(const k of visited){
+        const [ixStr, iyStr] = k.split(',');
+        const ix = parseInt(ixStr,10), iy = parseInt(iyStr,10);
+        if(ix < Math.floor(minX)-1 || ix > Math.ceil(maxX)+1 || iy < Math.floor(minY)-1 || iy > Math.ceil(maxY)+1) continue;
+        // project cell corners back to lat/lng then to container points
+        const p1 = metersToLonLat(ix, iy);
+        const p2 = metersToLonLat(ix+1, iy+1);
+        const tl = map.latLngToContainerPoint([p1.lat, p1.lon]);
+        const br = map.latLngToContainerPoint([p2.lat, p2.lon]);
+        const w = br.x - tl.x, h = br.y - tl.y; // y grows downward in screen coords
+        // skip if too small to see
+        if(w<0.5 || h<0.5) continue;
+        octx.fillRect(Math.floor(tl.x), Math.floor(tl.y), Math.ceil(w), Math.ceil(h));
+      }
+
+      // Draw current location dot
+      if(lastPos){
+        const p = map.latLngToContainerPoint([lastPos.lat,lastPos.lon]);
+        octx.beginPath();
+        octx.arc(p.x, p.y, 4, 0, Math.PI*2);
+        octx.fillStyle = '#fff';
+        octx.fill();
+        octx.lineWidth = 2; octx.strokeStyle = userColor; octx.stroke();
+      }
+    }
+
+    function updateTimer(){
+      if(!running || !startTime) return;
+      const sec = Math.floor((Date.now()-startTime)/1000);
+      const m = String(Math.floor(sec/60)).padStart(2,'0');
+      const s = String(sec%60).padStart(2,'0');
+      statTimeEl.textContent = `${m}:${s}`;
+    }
+
+    // ---------- Geolocation ----------
+    function startWatch(){
+      if(!('geolocation' in navigator)){
+        alert('이 기기에서는 위치 서비스를 사용할 수 없습니다. 디버그 모드(키보드)로 테스트하세요.');
+        return;
+      }
+      gpsStatusEl.textContent = '요청 중…';
+      watchId = navigator.geolocation.watchPosition(pos=>{
+        gpsStatusEl.textContent = '수신';
+        const {latitude:lat, longitude:lon, accuracy} = pos.coords;
+        addPosition(lat,lon,accuracy);
+      }, err=>{
+        gpsStatusEl.textContent = '오류';
+        console.warn(err);
+        if(err.code===1) alert('위치 권한을 허용해주세요.');
+      }, {enableHighAccuracy:true, maximumAge:1000, timeout:10000});
+    }
+    function stopWatch(){ if(watchId!=null){ navigator.geolocation.clearWatch(watchId); watchId=null; } gpsStatusEl.textContent = '중지'; }
+
+    // ---------- Controls ----------
+    function startRun(){
+      if(running) return;
+      running=true; btnStart.disabled=true; btnStop.disabled=false;
+      startTime = Date.now(); timerId=setInterval(updateTimer,250);
+      path=[]; visited=new Set(); totalDistance=0; lastPos=null;
+      drawCells();
+      startWatch();
+    }
+    function stopRun(save=true){
+      if(!running) return;
+      running=false; btnStart.disabled=false; btnStop.disabled=true;
+      clearInterval(timerId); timerId=null; updateTimer();
+      stopWatch();
+      if(save) persistRun();
+      updateLeaderboard();
+      prepareExport();
+    }
+    function resetSession(){
+      stopRun(false);
+      lastPos=null; path=[]; visited=new Set(); totalDistance=0; startTime=null;
+      statTimeEl.textContent='00:00'; statCellsEl.textContent='0'; statDistEl.textContent='0.00 km';
+      drawCells();
+    }
+
+    // ---------- Debug Movement ----------
+    let fake = {lat:37.5665, lon:126.9780};
+    window.addEventListener('keydown', e=>{
+      if(!debugMode.checked) return;
+      const step = (e.shiftKey? 0.0002 : 0.00008);
+      if(e.key==='ArrowUp') fake.lat += step;
+      else if(e.key==='ArrowDown') fake.lat -= step;
+      else if(e.key==='ArrowLeft') fake.lon -= step;
+      else if(e.key==='ArrowRight') fake.lon += step;
+      else return;
+      e.preventDefault();
+      addPosition(fake.lat,fake.lon,null);
+    });
+
+    // ---------- Persistence & Leaderboard ----------
+    const STORAGE_KEY='landrun.runs.v2';
+    const loadRuns=()=>{try{return JSON.parse(localStorage.getItem(STORAGE_KEY)||'[]')}catch{return[]}};
+    const saveRuns=arr=>localStorage.setItem(STORAGE_KEY,JSON.stringify(arr));
+    function persistRun(){
+      const runs=loadRuns();
+      const secs=startTime?Math.floor((Date.now()-startTime)/1000):0;
+      const nick=(nicknameInput.value||'Runner');
+      runs.push({t:Date.now(),nick,color:colorInput.value,seconds:secs,cells:visited.size,km:+(totalDistance/1000).toFixed(3)});
+      saveRuns(runs);
+    }
+    function updateLeaderboard(){
+      const runs=loadRuns();
+      const fmtTime=s=>`${Math.floor(s/60)}m ${s%60}s`;
+      const byCells=[...runs].sort((a,b)=>b.cells-a.cells).slice(0,5);
+      const byTime=[...runs].sort((a,b)=>b.seconds-a.seconds).slice(0,5);
+      leaderboardEl.innerHTML = `
+        <div style="margin-bottom:.25rem"><strong>최다 블록 Top 5</strong></div>
+        <table><thead><tr><th>#</th><th>닉</th><th>블록</th><th>시간</th><th>km</th></tr></thead>
+        <tbody>${byCells.map((r,i)=>`<tr><td>${i+1}</td><td>${r.nick}</td><td>${r.cells.toLocaleString()}</td><td>${fmtTime(r.seconds)}</td><td>${r.km}</td></tr>`).join('')}</tbody></table>
+        <div style="height:.5rem"></div>
+        <div style="margin-bottom:.25rem"><strong>최장 시간 Top 5</strong></div>
+        <table><thead><tr><th>#</th><th>닉</th><th>시간</th><th>블록</th><th>km</th></tr></thead>
+        <tbody>${byTime.map((r,i)=>`<tr><td>${i+1}</td><td>${r.nick}</td><td>${fmtTime(r.seconds)}</td><td>${r.cells.toLocaleString()}</td><td>${r.km}</td></tr>`).join('')}</tbody></table>`;
+    }
+
+    btnClearAll.addEventListener('click',()=>{if(confirm('기기 내 모든 기록을 삭제할까요?')){localStorage.removeItem(STORAGE_KEY);updateLeaderboard();}});
+
+    // ---------- Export GEOJSON ----------
+    function prepareExport(){
+      if(path.length<2){ btnExport.href='#'; return; }
+      const geojson={type:'FeatureCollection',features:[{type:'Feature',geometry:{type:'LineString',coordinates:path.map(p=>[p.lon,p.lat])},properties:{nickname:nicknameInput.value||'Runner',color:colorInput.value,cells:visited.size,km:+(totalDistance/1000).toFixed(3)}}]};
+      const blob=new Blob([JSON.stringify(geojson,null,2)],{type:'application/geo+json'});
+      const url=URL.createObjectURL(blob);
+      btnExport.href=url;
+    }
+
+    // ---------- Wire UI ----------
+    btnStart.addEventListener('click', startRun);
+    btnStop.addEventListener('click', ()=>stopRun(true));
+    btnReset.addEventListener('click', resetSession);
+
+    // Init
+    syncOverlaySize();
+    updateLeaderboard();
+  </script>
+</body>
+</html>
